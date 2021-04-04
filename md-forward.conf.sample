@@ -1,0 +1,8 @@
+# Sample md-forward configuration file.
+
+mail_user="${mail_user:-luther}"
+mail_src="${mail_src:-never-too-much.vandross.net}"
+mail_dest="${mail_dest:-busy-body.vandross.net}"
+
+work_dir="${work_dir:-/home/${mail_user}/md-forward/work}"
+

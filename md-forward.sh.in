@@ -1,0 +1,291 @@
+#!/usr/bin/env bash
+
+usage() {
+	local old_xtrace
+	old_xtrace="$(shopt -po xtrace || :)"
+	set +o xtrace
+	echo "${script_name} - Forward Maildir entries to an alternate location." >&2
+	echo "Usage: ${script_name} [flags]" >&2
+	echo "Option flags:" >&2
+	echo "  -u --mail-user    - Mail user name. Default: '${mail_user}'." >&2
+	echo "  -s --mail-src     - Host for source Maildir. Default: '${mail_src}'." >&2
+	echo "  -d --mail-dest    - Host for destination Maildir. Default: '${mail_dest}'." >&2
+	echo "  -S --sync-src     - Sync to mail-src. Default: '${sync_src}'." >&2
+	echo "  -D --sync-dest    - Sync to mail-dest. Default: '${sync_dest}'." >&2
+	echo "  -y --dry-run      - Do not modify files at source or dest. Default: '${dry_run}'." >&2
+	echo "  -w --work-dir     - Work directory. Default: '${work_dir}'." >&2
+	echo "  -c --config-file  - Config file. Default: '${config_file}'." >&2
+	echo "  -h --help         - Show this help and exit." >&2
+	echo "  -v --verbose      - Verbose execution." >&2
+	echo "  -g --debug        - Extra verbose execution." >&2
+	echo "Send bug reports to: Geoff Levand <geoff@infradead.org>." >&2
+	eval "${old_xtrace}"
+}
+
+get_bool_opt() {
+	local opt=${1}
+	local value=${2}
+	local out
+
+	case "${value}" in
+	y | yes | 1)
+		out='y'
+		;;
+	n | no | 0)
+		out='n'
+		;;
+	*)
+		echo "${FUNCNAME[0]}: ERROR: Unknown value: ${opt} = '${value}'" >&2
+		usage
+		exit 1
+		;;
+	esac
+
+	# echo "${FUNCNAME[0]}: ${opt} '${value}' => '${out}'" >&2
+	echo "${out}"
+}
+
+process_opts() {
+	local short_opts="u:s:d:S:D:yw:c:hvg"
+	local long_opts="mail-user:,mail-src:,mail-dest:,sync-src:,sync-dest:,\
+dry-run,work-dir:,config-file:,help,verbose,debug"
+
+	local opts
+	opts=$(getopt --options ${short_opts} --long ${long_opts} -n "${script_name}" -- "$@")
+
+	eval set -- "${opts}"
+
+	while : ; do
+		# echo "${FUNCNAME[0]}: @${1}@ @${2}@"
+		case "${1}" in
+		-u | --mail-user)
+			mail_user="${2}"
+			shift 2
+			;;
+		-s | --mail-src)
+			mail_src="${2}"
+			shift 2
+			;;
+		-d | --mail-dest)
+			mail_dest="${2}"
+			shift 2
+			;;
+		-S | --sync-src)
+			sync_src="$(get_bool_opt '--sync-src' "${2}")"
+			shift 2
+			;;
+		-D | --sync-dest)
+			sync_dest="$(get_bool_opt '--sync-dest' "${2}")"
+			shift 2
+			;;
+		-y | --dry-run)
+			dry_run=1
+			shift
+			;;
+		-w | --work-dir)
+			work_dir="${2}"
+			shift 2
+			;;
+		-c | --config-file)
+			config_file="${2}"
+			shift 2
+			;;
+		-h | --help)
+			usage=1
+			shift
+			;;
+		-v | --verbose)
+			verbose=1
+			shift
+			;;
+		-g | --debug)
+			verbose=1
+			debug=1
+			set -x
+			shift
+			;;
+		--)
+ 			shift
+			if [[ ${*} ]]; then
+				got_extra_args="${*}"
+			fi
+			break
+			;;
+		*)
+			echo "${script_name}: ERROR: Internal opts: '${*}'" >&2
+			exit 1
+			;;
+		esac
+	done
+}
+
+on_exit() {
+	local result=${1}
+	local sec=${SECONDS}
+
+	set +x
+	echo "${script_name}: Done: ${result}, ${sec} sec." >&2
+}
+
+verbose_echo() {
+	local msg="${*}"
+
+	if [[ ${verbose} ]]; then
+		echo "${msg}" >&2
+	fi
+}
+
+# Flag "P" (passed): the user has resent/forwarded/bounced this message to someone else.
+# Flag "R" (replied): the user has replied to this message.
+# Flag "S" (seen): the user has viewed this message, though perhaps he didn't read all the way through it.
+# Flag "T" (trashed): the user has moved this message to the trash; the trash will be emptied by a later user action.
+# Flag "D" (draft): the user considers this message a draft; toggled at user discretion.
+# Flag "F" (flagged): user-defined flag; toggled at user discretion.
+
+#===============================================================================
+export PS4='\[\e[0;33m\]+ ${BASH_SOURCE##*/}:${LINENO}:(${FUNCNAME[0]:-"?"}):\[\e[0m\] '
+script_name="${0##*/}"
+
+SCRIPTS_TOP=${SCRIPTS_TOP:-"$(cd "${BASH_SOURCE%/*}" && pwd)"}
+SECONDS=0
+start_time="$(date +%Y.%m.%d-%H.%M.%S)"
+
+ansi_reset='\e[0m'
+ansi_red='\e[1;31m'
+ansi_green='\e[0;32m'
+
+subj_color='\e[38;5;220m'
+from_color='\e[38;5;208m'
+file_color='\e[38;5;208m'
+
+trap "on_exit 'Failed'" EXIT
+set -e
+set -o pipefail
+
+sync_src='y'
+sync_dest='y'
+
+process_opts "${@}"
+
+config_file="${config_file:-${SCRIPTS_TOP}/md-forward.conf}"
+
+if [[ -f "${config_file}" ]]; then
+	source "${config_file}"
+fi
+
+work_dir="${work_dir:-/tmp/${script_name%.sh}-${start_time}}"
+work_dir="$(realpath -m "${work_dir}")"
+
+if [[ ${usage} ]]; then
+	usage
+	trap - EXIT
+	exit 0
+fi
+
+if [[ ${got_extra_args} ]]; then
+	echo "${script_name}: ERROR: Got extra args: '${got_extra_args}'" >&2
+	usage
+	exit 1
+fi
+
+if [[ ${verbose} ]]; then
+	rsync_extra="-v"
+else
+	rsync_extra="--quiet"
+fi
+
+if [[ ${debug} ]]; then
+	rsync_extra+=" --verbose"
+fi
+
+src_dir="${work_dir}/${mail_src}"
+dest_dir="${work_dir}/${mail_dest}"
+stage_dir="${work_dir}/stage-${start_time}"
+empty_dir="${work_dir}/empty"
+
+if [[ -e "${stage_dir}" ]]; then
+	rm -rf "${stage_dir:?}"
+fi
+
+if [[ -e "${empty_dir}" ]]; then
+	rm -rf "${empty_dir:?}"
+fi
+
+if [[ "${sync_src}" == 'y' ]]; then
+	verbose_echo "Syncing source: ${mail_src}"
+	mkdir -p "${src_dir}/new"
+	rsync ${rsync_extra} -a --delete ${mail_src}:/home/${mail_user}/Maildir/new/ "${src_dir}/new/"
+	verbose_echo
+fi
+
+readarray -t src_array < <(find "${src_dir}" -type f -name "*.${mail_src}" | sort)
+src_count="${#src_array[@]}"
+new_count=0
+
+if (( src_count == 0 )); then
+	echo -e "${script_name}: INFO: ${ansi_red}No new source files${ansi_reset} at ${mail_src}." >&2
+	trap "on_exit 'Success'" EXIT
+	exit 0
+fi
+
+if [[ "${sync_dest}" == 'y' ]]; then
+	verbose_echo "Syncing dest: ${mail_dest}"
+	mkdir -p "${dest_dir}"
+	rsync ${rsync_extra} -a --delete ${mail_dest}:/home/${mail_user}/Maildir/ "${dest_dir}/"
+	verbose_echo
+fi
+
+echo -e "${script_name}: INFO: ${ansi_green}Processing ${src_count} input files.${ansi_reset}" >&2
+verbose_echo
+
+mkdir -p "${stage_dir}"
+mkdir -p "${empty_dir}"
+
+for (( src_id = 1; src_id <= src_count; src_id++ )); do
+	src_path="${src_array[$(( src_id - 1 ))]}"
+	src_name="${src_path##*/}"
+
+	readarray -t dest_array < <(find "${dest_dir}" -type f -name "${src_name}"* | sort)
+	dest_count="${#dest_array[@]}"
+
+	if (( dest_count == 0 )); then
+		new_count=$(( new_count + 1 ))
+		cp "${src_path}" "${stage_dir}/"
+		if [[ ${verbose} ]]; then
+			echo -en "${src_id}: ${subj_color}Subject:${ansi_reset}" >&2
+			grep -E '^Subject: ' "${src_path}" | cut -d ':' -f 2- >&2
+			echo -en "${src_id}: ${from_color}From:${ansi_reset}" >&2
+			grep -E '^From: ' "${src_path}" | cut -d ':' -f 2- >&2
+			# echo -e "${src_id}: ${file_color}File:${ansi_reset} ${src_path}" >&2
+			echo -e "${src_id}: ${src_path}" >&2
+			echo >&2
+		fi
+		continue
+	fi
+
+	verbose_echo "src_${src_id}: ${src_path}"
+
+	#echo "${script_name}:   INFO: Processing ${dest_count} dest files." >&2
+	for (( dest_id = 1; dest_id <= dest_count; dest_id++ )); do
+		dest_path="${dest_array[$(( dest_id - 1 ))]}"
+		dest_name="${dest_path##*/}"
+
+		verbose_echo " dest_${dest_id}: ${dest_path}"
+
+		diff -u "${src_path}" "${dest_path}"
+	done
+	verbose_echo
+done
+
+echo -e "${script_name}: INFO: ${ansi_green}${new_count} new files in${ansi_reset} '${stage_dir}'." >&2
+
+if [[ ${dry_run} ]]; then
+	echo "${script_name}: INFO: Dry run, no host files modified." >&2
+else
+	rsync -av "${stage_dir}/" ${mail_dest}:/home/${mail_user}/Maildir/new/
+	(cd "${src_dir}/new" && ls -1 *.${mail_src}) > "${src_dir}/new/processed-files"
+	rsync -v --delete-missing-args --files-from="${src_dir}/new/processed-files" "${empty_dir}"/ ${mail_src}:/home/${mail_user}/Maildir/new/
+fi
+
+trap "on_exit 'Success'" EXIT
+exit 0
