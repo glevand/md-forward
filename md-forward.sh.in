@@ -268,8 +268,10 @@ new_count=0
 
 if (( src_count == 0 )); then
 	echo -e "${script_name}: INFO: ${no_new_color}No new source files${ansi_reset} at ${mail_src}."
-	trap "on_exit 'Success'" EXIT
-	exit 0
+	if [[ "${sync_dest}" != 'y' ]]; then
+		trap "on_exit 'Success'" EXIT
+		exit 0
+	fi
 fi
 
 echo -e "${script_name}: INFO: ${new_color}Processing ${src_count} new input files.${ansi_reset}"
