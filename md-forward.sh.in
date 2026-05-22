@@ -170,10 +170,15 @@ ansi_reset='\e[0m'
 ansi_red='\e[1;31m'
 ansi_green='\e[0;32m'
 
-subj_color='\e[38;5;220m'
-from_color='\e[38;5;208m'
-to_color='\e[38;5;136m'
-file_color='\e[38;5;208m'
+subj_color="${subj_color:-\e[38;5;220m}"
+patch_color="${patch_color:-\e[38;5;75m}"
+from_color="${from_color:-\e[38;5;208m}"
+to_color="${to_color:-\e[38;5;136m}"
+
+#file_color="${file_color:-\e[38;5;208m}"
+
+new_color="${new_color:-${ansi_green}}"
+no_new_color="${no_new_color:-${ansi_red}}"
 
 trap "on_exit 'Failed'" EXIT
 trap 'on_err ${FUNCNAME[0]:-main} ${LINENO} ${?}' ERR
@@ -254,19 +259,20 @@ fi
 
 readarray -t src_array < <(find "${src_dir}" -type f -name "*.${mail_src}" \
 	| sort \
-	|| { echo "${script_name}: ERROR: src_array find failed, function=${FUNCNAME[0]:-main}, line=${LINENO}, result=${?}" >&2; \
+	|| { echo "${script_name}: ERROR: src_array find failed, " \
+	"function=${FUNCNAME[0]:-main}, line=${LINENO}, result=${?}" >&2; \
 	kill -SIGUSR1 $$; } )
 
 src_count="${#src_array[@]}"
 new_count=0
 
 if (( src_count == 0 )); then
-	echo -e "${script_name}: INFO: ${ansi_red}No new source files${ansi_reset} at ${mail_src}."
+	echo -e "${script_name}: INFO: ${no_new_color}No new source files${ansi_reset} at ${mail_src}."
 	trap "on_exit 'Success'" EXIT
 	exit 0
 fi
 
-echo -e "${script_name}: INFO: ${ansi_green}Processing ${src_count} new input files.${ansi_reset}"
+echo -e "${script_name}: INFO: ${new_color}Processing ${src_count} new input files.${ansi_reset}"
 echo
 
 if [[ "${sync_dest}" == 'y' ]]; then
@@ -284,7 +290,8 @@ for (( src_id = 1; src_id <= src_count; src_id++ )); do
 	src_name="${src_path##*/}"
 
 	readarray -t dest_array < <(find "${dest_dir}" -type f -name "${src_name}"* | sort \
-		|| { echo "${script_name}: ERROR: dest_array find failed, function=${FUNCNAME[0]:-main}, line=${LINENO}, result=${?}" >&2; \
+		|| { echo "${script_name}: ERROR: dest_array find failed, " \
+		"function=${FUNCNAME[0]:-main}, line=${LINENO}, result=${?}" >&2; \
 		kill -SIGUSR1 $$; } )
 
 	dest_count="${#dest_array[@]}"
@@ -294,18 +301,28 @@ for (( src_id = 1; src_id <= src_count; src_id++ )); do
 		cp "${src_path}" "${stage_dir}/"
 		if [[ ! ${quiet} ]]; then
 		{
-			echo -en "${src_id}: ${subj_color}Subject:${ansi_reset}"
-			if ! grep '^Subject: ' "${src_path}" | cut -d ':' -f 2-; then
-				echo " N/A"
+			subject="$(grep '^Subject: ' "${src_path}")"
+			patch_regex="^Subject: (.*)(\[.*\])(.*)$"
+
+			if [[ "${subject}" =~ ${patch_regex} ]]; then
+				echo -e "${src_id}: ${subj_color}Subject:" \
+					"${ansi_reset} ${BASH_REMATCH[1]}" \
+					"${patch_color}${BASH_REMATCH[2]}" \
+					"${ansi_reset}${BASH_REMATCH[3]}"
+			else
+				echo -en "${src_id}: ${subj_color}Subject:${ansi_reset}"
+				if ! grep --max-count=1 '^Subject: ' "${src_path}" | cut -d ':' -f 2-; then
+					echo " N/A"
+				fi
 			fi
 
 			echo -en "${src_id}: ${from_color}From:${ansi_reset}"
-			if ! grep '^From: ' "${src_path}" | cut -d ':' -f 2-; then
+			if ! grep --max-count=1 '^From: ' "${src_path}" | cut -d ':' -f 2-; then
 				echo " N/A"
 			fi
 
 			echo -en "${src_id}: ${to_color}To:${ansi_reset}"
-			if ! grep '^To: ' "${src_path}" | cut -d ':' -f 2-; then
+			if ! grep --max-count=1 '^To: ' "${src_path}" | cut -d ':' -f 2-; then
 				echo " N/A"
 			fi
 
@@ -329,7 +346,7 @@ for (( src_id = 1; src_id <= src_count; src_id++ )); do
 	verbose_echo
 done
 
-echo -e "${script_name}: INFO: ${ansi_green}${new_count} new files in${ansi_reset} '${stage_dir}'."
+echo -e "${script_name}: INFO: ${new_color}${new_count} new files in${ansi_reset} '${stage_dir}'."
 echo
 
 if [[ ${dry_run} ]]; then
